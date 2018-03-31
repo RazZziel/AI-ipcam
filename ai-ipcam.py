@@ -3,15 +3,14 @@ from darkflow.net.build import TFNet
 import cv2
 import os
 import random
-from subprocess import Popen
 import time
 from PIL import Image,ImageDraw
 import numpy as np
 import paho.mqtt.client as mqtt
 import argparse
 #In case Raspberry Pi camera is used instead of RTSP stream
-import picamera
 usepicamera = False
+usewebcam = True
 
 #RTSP captured frame frame_filename; preferably on RAM drive
 #diskutil erasevolume HFS+ 'RAM Disk' `hdiutil attach -nomount ram://20480`
@@ -24,7 +23,8 @@ usepicamera = False
 frame_filename = '/tmp/ramdisk/frame'+str(random.randint(1,99999))+'.jpeg'
 
 #threshold parameter is below, keeping it too low will result in recognition errors
-options = {"model": "cfg/tiny-yolo.cfg", "load": "tiny-yolo.weights",  "threshold": 0.55}
+options = {"model": "cfg/yolov2.cfg", "load": "yolov2.weights",  "threshold": 0.55, "labels": "cfg/coco.names", "gpu": 1.0}
+#options = {"model": "cfg/yolov2-tiny.cfg", "load": "yolov2-tiny.weights",  "threshold": 0.55, "labels": "cfg/coco.names", "gpu": 1.0}
 
 parser=argparse.ArgumentParser()
 parser.add_argument(
@@ -72,10 +72,14 @@ print("MQTT broker: %r" % broker_address)
 print("MQTT topic: %r" % mqtt_topic)
 print("Show image: %r" % showimageflag)
 
-if usepicamera:
+if usewebcam:
+    cap = cv2.VideoCapture(0)
+elif usepicamera:
+    import picamera
     camera = picamera.PiCamera()
     camera.resolution = (640, 480)
 else:
+    from subprocess import Popen
     #start a ffmpeg process that captures one frame every 2 seconds
     p = Popen(['ffmpeg', '-loglevel', 'panic', '-rtsp_transport', 'udp', '-i', rtsp_stream, '-f' ,'image2' ,'-s', '640x480', '-pix_fmt', 'yuvj420p', '-r', '1/2' ,'-updatefirst', '1', frame_filename])
 
@@ -88,12 +92,20 @@ tfnet = TFNet(options)
 
 while True:
     try:
-        if usepicamera:
-            camera.capture( frame_filename )
-        curr_img = Image.open( frame_filename )
-        curr_img_cv2 = cv2.cvtColor(np.array(curr_img), cv2.COLOR_RGB2BGR) #is the frame good and can be opened?
+        if usewebcam:
+            # HACK: Reset the camera in order to skip frames without consuming them in a separate thread
+            cap = cv2.VideoCapture(0)
+            ret, curr_img_cv2 = cap.read()
+            cap.release()
+
+            curr_img = Image.fromarray(cv2.cvtColor(curr_img_cv2, cv2.COLOR_BGR2RGB))
+        else:
+            if usepicamera:
+                camera.capture( frame_filename )
+            curr_img = Image.open( frame_filename )
+            os.remove(frame_filename) #delete frame once it is processed, so we don't reprocess the same frame over
+            curr_img_cv2 = cv2.cvtColor(np.array(curr_img), cv2.COLOR_RGB2BGR) #is the frame good and can be opened?
         curr_img_cv2 = cv2.resize(curr_img_cv2, (640, 480)) 
-        os.remove(frame_filename) #delete frame once it is processed, so we don't reprocess the same frame over
     except: # ..frame not ready, just snooze for a bit
         time.sleep(1)
         continue
@@ -123,6 +135,6 @@ while True:
         if cv2.waitKey(50) & 0xFF == ord('q'): # wait for image render
             break
             continue
-    time.sleep(1)
+    #time.sleep(1)
 p.terminate()
 cv2.destroyAllWindows() 
